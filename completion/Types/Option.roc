@@ -1,3 +1,5 @@
+## Option represents `[Some a, None]`
+## implements decoding and encoding along with a collection of utils
 interface Types.Option
     exposes [
         some,
@@ -7,6 +9,7 @@ interface Types.Option
         map,
         or,
         orThen,
+        get,
     ]
     imports [
         Decode,
@@ -16,9 +19,7 @@ interface Types.Option
 
 Option val := [None, Some val]
     implements [
-        Eq {
-            isEq: optionEq,
-        },
+        Eq,
         Decoding {
             decoder: optionDecode,
         },
@@ -51,49 +52,45 @@ isSome = \@Option opt ->
         None -> Bool.false
         _ -> Bool.true
 
-optionEq = \@Option a, @Option b ->
-    when (a, b) is
-        (Some a1, Some b1) -> a1 == b1
-        (None, None) -> Bool.true
-        _ -> Bool.false
+get = \@Option val -> val
 
-optionToEncode : Option val -> Encoder fmt  where val implements Encoding,fmt implements EncoderFormatting
+# optionToEncode : Option val -> Encoder fmt where val implements Encoding, fmt implements EncoderFormatting
+
 optionToEncode = \@Option val ->
-    when val is
-        Some contents ->
-            Encode.custom \bytes, fmt ->
-                bytes |> List.concat (Encode.toBytes contents fmt)
-        None -> Encode.custom \bytes, fmt -> []
+    Encode.custom \bytes, fmt ->
+        when val is
+            Some contents -> bytes |> Encode.append contents fmt
+            None -> bytes
 
 expect
     encoded =
-        dat:{maybe:Option u8,other:Str}
-        dat={maybe: none {},other:"hi" }
+        dat : { maybe : Option U8, other : Str }
+        dat = { maybe: none {}, other: "hi" }
         Encode.toBytes dat Core.json
         |> Str.fromUtf8
 
-    expected = Ok "{\"other\":\"hi\"}"
+    expected = Ok """{"maybe":null,"other":"hi"}"""
     expected == encoded
+
 expect
     encoded =
-        dat:Option u8
-        dat=@Option None
+        dat : Option U8
+        dat = @Option None
         Encode.toBytes dat Core.json
         |> Str.fromUtf8
 
     expected = Ok ""
     expected == encoded
-#Encode Option Some
- expect
-     encoded =
-         { maybe: some 10 }
-         |> Encode.toBytes Core.json
-         |> Str.fromUtf8
+# Encode Option Some
+expect
+    encoded =
+        { maybe: some 10 }
+        |> Encode.toBytes Core.json
+        |> Str.fromUtf8
 
-     expected = Ok "{\"maybe\":10}"
-     expected == encoded
-#Encode Option None
-
+    expected = Ok "{\"maybe\":10}"
+    expected == encoded
+# Encode Option None
 
 optionDecode = Decode.custom \bytes, fmt ->
     if bytes |> List.len == 0 then

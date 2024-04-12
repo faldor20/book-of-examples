@@ -1,10 +1,16 @@
 interface LspTypes
-    exposes []
+    exposes [
+        RequestMessage,
+        ResponseMessage,
+        responseMessage,
+        requestMessage,
+    ]
     imports [
         Types.Union2.{ Union2 },
-        Types.Option.{ Option },
-        Types.Union5.{ Union5 },
+        Types.Option.{ Option, none, some },
         Core,
+        DecodeUtils,
+        CompletionItemKind.{ CompletionItemKind },
     ]
 Position : {
     line : U64,
@@ -17,37 +23,24 @@ Range : {
     end : Position,
 }
 
-## Makes a decoder that turns a string into some specific type
-stringDecoder = \strToType -> Decode.custom \bytes, fmt ->
-        Decode.fromBytesPartial bytes fmt
-        |> tryMap strToType
-
-## Makes a decoder that turns a string into an opaque tag type
-tagDecoder = \map, opaqueType ->
-    stringDecoder \str ->
-        map
-        |> List.walkUntil (Err TooShort) \state, (tagStr, tag) ->
-            if tagStr == str then
-                Break (Ok (opaqueType tag))
-            else
-                Continue state
-
-
-
 ## MarkupKind: 'plainText'|'markdown'
-#TODO:implement encoding
-MarkupKind := [PlainText, Markdown] implements [Decoding { decoder: markupKindDecoder }]
+# TODO:implement encoding
+MarkupKind := [PlainText, Markdown] implements [Decoding { decoder: markupKindDecoder }, Encoding { toEncoder: markupKindEncoder }]
+
 markupKindDecoder =
-    [
-        ("plainText", PlainText),
-        ("markdown", Markdown),
-    ]
-    |> tagDecoder @MarkupKind
-# tagDecoder \str->
-#     when str is
-#         "plainText" -> Ok (@MarkupKind PlainText)
-#         "markdown" -> Ok (@MarkupKind Markdown)
-#         _ -> Err TooShort
+    DecodeUtils.tryWrapDecode \str ->
+        when str is
+            "plainText" -> Ok (@MarkupKind PlainText)
+            "Markdown" -> Ok (@MarkupKind Markdown)
+            _ -> Err TooShort
+
+markupKindEncoder = \@MarkupKind val ->
+    str =
+        when val is
+            PlainText -> "plainText"
+            Markdown -> "Markdown"
+
+    str |> Encode.toEncoder
 
 MarkupContent : {
     kind : MarkupKind,
@@ -58,6 +51,9 @@ DocumentUri : Str
 
 TextDocumentIdentifier : {
     uri : DocumentUri,
+}
+VersionedTextDocumentIdentifier : {
+    version : I64,
 }
 
 TextDocumentItem : {
@@ -74,6 +70,7 @@ TextDocumentItem : {
     ## The content of the opened text document.
     text : Str,
 }
+
 WorkDoneProgressParams : {
     workDoneToken : Union2 I64 Str,
 }
@@ -81,55 +78,188 @@ WorkDoneProgressParams : {
 ## Doesn't work
 # ProgressToken : Union2 I64 Str
 
-RequestMessageIntern a : {
-    id : Union2 I64 Str,
-    method : Str,
-    # TODO: This should techincally be a union of array and object
-    params : Option a,
+## **Invoked**
+## Completion was triggered by typing an identifier (24x7 code
+## complete), manual invocation (e.g Ctrl+Space) or via API.
+##
+## **TriggerCharacter**
+## Completion was triggered by a trigger character specified by
+## the `triggerCharacters` properties of the
+## `CompletionRegistrationOptions`.
+##
+## **TriggerCharacter**
+## Completion was re-triggered as the current completion list is incomplete.
+CompletionTriggerKind := [Invoked, TriggerCharacter, TriggerForIncompleteCompletions]
+    implements [
+        Decoding {
+            decoder: decodeCompletionTriggerKind,
+        },
+        Encoding { toEncoder: encodeCompletionTriggerKind },
+        Eq,
+    ]
+
+decodeCompletionTriggerKind =
+    ok = \tag -> Ok (@CompletionTriggerKind tag)
+    DecodeUtils.tryWrapDecode \val ->
+        when val is
+            1 -> ok Invoked
+            2 -> ok TriggerCharacter
+            3 -> ok TriggerForIncompleteCompletions
+            _ -> Err TooShort
+encodeCompletionTriggerKind = \@CompletionTriggerKind tag ->
+    num =
+        when tag is
+            Invoked -> 1
+            TriggerCharacter -> 2
+            TriggerForIncompleteCompletions -> 3
+    num |> Encode.u8
+
+## How a completion was triggered
+CompletionContext : {
+    triggerKind : CompletionTriggerKind,
+    triggerCharacter : Option Str,
+}
+CompletionParams : {
+    textDocument : TextDocumentIdentifier,
+    position : Position,
+    workDoneToken : Option (Union2 I64 Str),
+    partialResultToken : Option (Union2 I64 Str),
+    context : Option CompletionContext,
+}
+
+CompletionItem : {
+    label : Str,
+    kind : Option CompletionItemKind,
+    detail : Option Str,
+    documentation : Option MarkupContent,
+    # There are many other fields we will be ommiting for the sake of brevity. They are not needed for simple completion
+    # tags : Option (List CompletionItemTag),
+    # labelDetails : Option CompletionItemLabelDetails,
+    # deprecated: Option Bool,
+    # preselect : Option Bool,
+    # sortText : Option Str,
+    # filterText : Option Str,
+    # insertText : Option Str,
+    # insertTextFormat : Option InsertTextFormat,
+    # insertTextMode : Option InsertTextMode,
+    # textEdit : Option (Union2 TextEdit InsertReplaceEdit),
+    # textEditText : Option Str,
+    # additionalTextEdits : Option (List TextEdit),
+    # commitCharacters : Option (List Str),
+    # command : Option Command,
+    # data : Option LSPAny,
+}
+
+# ==== Content Change====
+
+PartialChangeEvent : {
+    text : Str,
+}
+FullChangeEvent : {
+    range : Range,
+    rangeLength : Option U64,
+    text : Str,
+}
+
+TextDocumentContentChangeEvent := [PartialChange PartialChangeEvent, FullChange FullChangeEvent]
+    implements [
+        Eq,
+        Decoding { decoder: contentChangeDecode },
+        Encoding { toEncoder: contentChangeEncoder },
+    ]
+
+contentChangeEncoder = \@TextDocumentContentChangeEvent change ->
+    when change is
+        PartialChange a -> Encode.toEncoder a
+        FullChange a -> Encode.toEncoder a
+
+contentChangeDecode =
+    DecodeUtils.wrapDecode PartialChange
+    |> DecodeUtils.wrapOnErr FullChange
+    |> DecodeUtils.wrapSuccess @TextDocumentContentChangeEvent
+
+# BOOK: We won't implement any of this because it isn't something we need for our simple  server. if you needed some of these options you could add them.
+InitializeParams : {
+    processId : Option I64,
+    # workspaceFolders : Option (List WorkspaceFolder),
+    # clientInfo : Option {
+    #     name : Str,
+    #     version : Option Str,
+    # },
+    # locale : Option Str,
+    # rootPath : Option Str,
+    # rootUri : Option Str,
+    # initializationOptions : Option LSPAny,
+    # capabilities : ClientCapabilities,
+    # trace : Option TraceValue,
+}
+DidChangeTextDocumentParams : {
+    textDocument : VersionedTextDocumentIdentifier,
+    contentChanges : List TextDocumentContentChangeEvent,
+}
+
+DidOpenTextDocumentParams : {
+    ## The document that was opened.
+    textDocument : TextDocumentItem,
 }
 HoverParams : {
     textDocument : TextDocumentIdentifier,
     position : Position,
     workDoneToken : Option (Union2 I64 Str),
 }
-DidOpenTextDocumentParams : {
-    ## The document that was opened.
-    textDocument : TextDocumentItem,
+
+RequestMessageIntern a : {
+    id : Union2 I64 Str,
+    method : Str,
+    # TODO: This should techincally be a union of array and object
+    # BOOk: notice how we don't make it optional, We do that because we know if it exists when we differentiate types by their method
+    params : a,
+}
+NotificationIntern a : {
+    method : Str,
+    # TODO: This should techincally be a union of array and object
+    # BOOk: notice how we don't make it optional, We do that because we know if it exists when we differentiate types by their method
+    params : a,
 }
 
 RequestMessage := [
+    Init (RequestMessageIntern InitializeParams),
     Hover (RequestMessageIntern HoverParams),
-    DidOpen (RequestMessageIntern DidOpenTextDocumentParams),
+    DidOpen (NotificationIntern DidOpenTextDocumentParams),
+    DidChange (NotificationIntern DidChangeTextDocumentParams),
+    Completion (RequestMessageIntern CompletionParams),
 ]
     implements [
         Decoding {
             decoder: decodeRequestMessage,
-        },
-    ]
-## Try to another decode based on the first decode succeeding
-tryResult : DecodeResult _, _ -> _
-tryResult = \decoded, try ->
-    when decoded.result is
-        Err e -> { result: Err e, rest: decoded.rest }
-        Ok res -> try res decoded.rest
-tryMap : DecodeResult _, _ -> _
-tryMap = \decoded, try ->
-    when decoded.result is
-        Err e -> { result: Err e, rest: decoded.rest }
-        Ok res -> { result: try res, rest: decoded.rest }
 
+        },
+        Encoding {
+            toEncoder: requestEncode,
+        },
+        Eq,
+    ]
 decodeRequestMessage = Decode.custom \bytes, fmt ->
     decodeRequest = \requestType ->
         Decode.fromBytesPartial bytes fmt
         |> Decode.mapResult \res -> @RequestMessage (requestType res)
 
-    Decode.decodeWith bytes Decode.decoder fmt
-    |> tryResult \res, rest ->
+    Decode.fromBytesPartial bytes fmt
+    |> DecodeUtils.tryResult \res, rest ->
         when res.method is
+            "textDocument/init" -> decodeRequest Init
             "textDocument/hover" -> decodeRequest Hover
+            "textDocument/completion" -> decodeRequest Completion
             "textDocument/didOpen" -> decodeRequest DidOpen
-            "textDocument/didOpen" -> decodeRequest DidOpen
+            "textDocument/didChange" -> decodeRequest DidChange
             _ -> { result: Err (TooShort), rest }
+
+requestEncode = \@RequestMessage val ->
+    when val is
+        Init a -> Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+        _ -> Encode.u32 1
+
+requestMessage = \@RequestMessage req -> req
 
 # =====Testing====
 sampleHover =
@@ -144,9 +274,7 @@ expect
     testDecode = sampleHover |> Decode.fromBytes Core.json
     when testDecode is
         Ok (@RequestMessage (Hover hover)) ->
-            hover.params
-            |> Types.Option.map (\x -> x.position == (position 5 0))
-            |> Types.Option.or Bool.false
+            hover.params.position == (position 5 0)
 
         _ -> Bool.false
 
@@ -157,7 +285,7 @@ expect
 
 ResponseMessageIntern a : {
     id : Option (Union2 I64 Str),
-    result : Option (Union5 Str F64 Bool a (List a)),
+    result : Option a,
     # TODO: This should techincally be a union of array and object
     error : Option ResponseErr,
 }
@@ -168,32 +296,34 @@ ResponseErr : {
 
 ResponseMessage := [
     Hover (ResponseMessageIntern HoverResponse),
+    Completion (ResponseMessageIntern CompletionResponse),
+    Init (ResponseMessageIntern InitializeResponse),
+
 ]
     implements [
-        Decoding {
-            decoder: decodeRequestMessage,
-        },
+        # Decoding {
+        #     decoder: decodeRequestMessage,
+        # },
         Encoding {
-           toEncoder:toEncoder
-        }
+            toEncoder: responseToEncoder,
+        },
     ]
-toEncoder:ResponseMessage->_
-toEncoder= \@ResponseMessage val->
+responseToEncoder : ResponseMessage -> _
+responseToEncoder = \@ResponseMessage val ->
     when val is
-        Hover a->
-            Encode.custom \bytes,fmt->
-                bytes|>Encode.append a fmt
+        Hover a ->
+            # Encode.toEncoder
+            Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
 
-decodeResponseMessage = Decode.custom \bytes, fmt ->
-    decodeResponse = \requestType ->
-        Decode.fromBytesPartial bytes fmt
-        |> Decode.mapResult \res -> @ResponseMessage (requestType res)
+        Completion a ->
+            # Encode.toEncoder
+            Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
 
-    Decode.decodeWith bytes Decode.decoder fmt
-    |> tryResult \res, rest ->
-        when res.method is
-            "textDocument/hover" -> decodeResponse Hover
-            _ -> { result: Err (TooShort), rest }
+        Init a ->
+            Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+# Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+
+responseMessage = \@ResponseMessage req -> req
 
 HoverResponse : {
     ##The hover's content
@@ -204,3 +334,127 @@ HoverResponse : {
     ## that is used to visualize a hover, e.g. by changing the background color.
     range : Option Range,
 }
+
+CompletionResponse : List CompletionItem
+
+InitializeResponse : {
+    capabilities : ServerCapabilities,
+    serverInfo : Option {
+        name : Str,
+        version : Option Str,
+    },
+}
+
+TextDocumentSyncKind := [None, Full, Incremental]
+    implements [
+        Decoding { decoder: decodeTextDocumentSyncKind },
+        Encoding { toEncoder: encodeTextDocumentSyncKind },
+    ]
+decodeTextDocumentSyncKind =
+    DecodeUtils.tryWrapDecode \val ->
+        when val is
+            0 -> Ok (@TextDocumentSyncKind None)
+            1 -> Ok (@TextDocumentSyncKind Full)
+            2 -> Ok (@TextDocumentSyncKind Incremental)
+            _ -> Err TooShort
+
+encodeTextDocumentSyncKind = \@TextDocumentSyncKind kind ->
+    num =
+        when kind is
+            None -> 0
+            Full -> 1
+            Incremental -> 2
+    num |> Encode.u8
+
+CompletionOptions : {
+    resolveProvider : Option Bool,
+    triggerCharacters : Option (List Str),
+}
+
+ServerCapabilities : {
+    textDocumentSync : Option TextDocumentSyncKind,
+    completionProvider : Option CompletionOptions,
+    hoverProvider : Option Bool,
+    # Many many other capabilities we won't bother supporting
+}
+
+expect
+    expected =
+        """
+        {"error":null,"id":10,"result":[{"detail":"hello there","documentation":null,"kind":1,"label":"Hi"}]}
+        """
+
+    response = @ResponseMessage
+        (
+            Completion {
+                id: some (Types.Union2.u1 10),
+                result: some [
+                    {
+                        label: "Hi",
+                        kind: some (CompletionItemKind.from Text),
+                        detail: some "hello there",
+                        documentation: none {},
+                    },
+                ],
+                error: none {},
+            }
+
+        )
+    actual = Encode.toBytes response Core.json |> Str.fromUtf8
+
+    (Ok expected) == actual
+expect
+    expected =
+        """
+        {"error":null,"id":10,"result":[{"detail":"hello there","documentation":null,"kind":1,"label":"Hi"}]}
+        """
+
+    response = @ResponseMessage
+        (
+            Completion {
+                id: some (Types.Union2.u1 10),
+                result: some [
+                    {
+                        label: "Hi",
+                        kind: some (CompletionItemKind.from Text),
+                        detail: some "hello there",
+                        documentation: none {},
+                    },
+                ],
+                error: none {},
+            }
+
+        )
+    actual = Encode.toBytes response Core.json |> Str.fromUtf8
+
+    (Ok expected) == actual
+
+params : InitializeParams
+params = { processId: some (Num.toI64 100) }
+testRequest = @RequestMessage
+    (
+        Init {
+            id: Types.Union2.u1 10,
+            params,
+            method: "textDocument/init",
+        }
+    )
+json = \a -> a
+# Request message Encode
+expect
+    expected = json
+        # TODO: I think the fact i need to put a \ before the / in the string is a bug
+        """
+        {"id":10,"method":"textDocument\\/init","params":{"processId":100}}
+        """
+    requestStr = [] |> Encode.appendWith (requestEncode testRequest) Core.json |> Str.fromUtf8
+    Ok expected == requestStr
+# Request message Decode
+expect
+    str =
+        """
+        {"id":10,"method":"textDocument\\/init","params":{"processId":100}}
+        """
+    decoded = str |> Str.toUtf8 |> Decode.fromBytes Core.json
+    decoded == Ok testRequest
+

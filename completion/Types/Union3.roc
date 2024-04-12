@@ -19,6 +19,9 @@ Union3 u1 u2 u3 := [U1 u1, U2 u2, U3 u3]
         Decoding {
             decoder: decoder,
         },
+        Encoding{
+            toEncoder
+        }
     ]
 isEq = \@Union3 a, @Union3 b -> a == b
 u1 = \item -> @Union3 (U1 item)
@@ -26,6 +29,11 @@ u2 = \item -> @Union3 (U2 item)
 u3 = \item -> @Union3 (U3 item)
 
 get = \@Union3 union -> union
+toEncoder=\@Union3 val->
+    when val is 
+        U1 u->u|>Encode.toEncoder 
+        U2 u->u|>Encode.toEncoder 
+        U3 u->u|>Encode.toEncoder 
 
 decoder = Decode.custom \bytes, fmt ->
     when bytes |> Decode.decodeWith (Decode.decoder) fmt is

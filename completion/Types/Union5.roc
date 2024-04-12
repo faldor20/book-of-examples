@@ -21,6 +21,9 @@ Union5 u1 u2 u3 u4 u5 := [U1 u1, U2 u2, U3 u3, U4 u4, U5 u5]
         Decoding {
             decoder: decoder,
         },
+        Encoding {
+            toEncoder,
+        },
     ]
 isEq = \@Union5 a, @Union5 b -> a == b
 u1 = \item -> @Union5 (U1 item)
@@ -47,6 +50,14 @@ decoder = Decode.custom \bytes, fmt ->
                                     when bytes |> Decode.decodeWith (Decode.decoder) fmt is
                                         { result: Ok res, rest } -> { result: Ok (u5 res), rest }
                                         { result: Err res, rest } -> { result: Err res, rest }
+
+toEncoder = \@Union5 val ->
+    when val is
+        U1 u -> u |> Encode.toEncoder
+        U2 u -> u |> Encode.toEncoder
+        U3 u -> u |> Encode.toEncoder
+        U4 u -> u |> Encode.toEncoder
+        U5 u -> u |> Encode.toEncoder
 
 expect
     name : Result (Union5 U8 { hi : U8 } (List U8) U64 F32) _
