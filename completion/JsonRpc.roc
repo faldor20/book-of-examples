@@ -1,20 +1,31 @@
 interface JsonRpc
-    exposes [messageLoop,sendMessage, readMessage]
-    imports [pf.Stdout, pf.Stdin, pf.Task, Core, LspTypes.{ requestMessage,RequestMessage, ResponseMessage },Types.Option]
+    exposes [messageLoop,  sendBytes, readMessage]
+    imports [
+        pf.Stdout,
+        pf.Stdin,
+        pf.Task,
+        Core,
+        LspTypes.{  RequestMessage, ResponseMessage },
+        Wrap.{from,to},
+        Types.Option,
+    ]
 
 ##====JSONRPC Implimentation====##
 
 ##Converts a result to a task then awaits it
 awaitResult = \res, next -> res |> Task.fromResult |> Task.await next
+# sendMessage a:
+# sendMessage = \messageObj ->
+#     messageBytes = messageObj |> Encode.toBytes Core.json
+#     sendBytes messageBytes
 
-
-sendMessage = \messageBytes ->
+sendBytes = \messageBytes ->
     len = messageBytes |> List.len
     messageStr <- messageBytes |> Str.fromUtf8 |> awaitResult
     msg = "Content-Type: $(len |> Num.toStr)\r\n\r\n$(messageStr)"
     Stdout.write msg
 
-## Continueously handle incoming messages 
+## Continueously handle incoming messages
 messageLoop : (List U8 -> Task.Task [Continue, Exit] _) -> _
 messageLoop = \messageHandler ->
     Task.loop [] \leftOver ->
@@ -76,6 +87,7 @@ getContentLength = \header ->
     contentHeaderName = "Content-Length: "
     # we do contians here because if we failed to parse the last body it might be stuck at the end of this header
     dbg headers
+
     contentHeader = headers |> List.findFirst \a -> a |> Str.contains contentHeaderName
     when contentHeader is
         Err _ -> Err NoContentHeader
@@ -94,17 +106,17 @@ hoverJson =
     """
 expect
     input = makeTest hoverJson |> Str.toUtf8
-    res=
+    res =
         (length, after) <- parseHeader input |> Result.try
-        {before:content,others:leftOver}=after|>Str.toUtf8 |>List.split length
-        msg <- (content) |> Decode.fromBytes Core.json|>Result.map
-        msgDat:RequestMessage 
-        msgDat=msg
-        when requestMessage msgDat is 
-            Hover a->  
-                leftOver==[] && (a.params.position.line==5) 
-            _-> Bool.false
+        { before: content, others: leftOver } = after |> Str.toUtf8 |> List.split length
+        msg <- (content) |> Decode.fromBytes Core.json |> Result.map
+        msgDat : RequestMessage
+        msgDat = msg
+        when from msgDat is
+            Hover a ->
+                leftOver == [] && (a.params.position.line == 5)
 
-        
-    res==Ok(Bool.true)
+            _ -> Bool.false
+
+    res == Ok (Bool.true)
 

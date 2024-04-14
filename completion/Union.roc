@@ -10,7 +10,9 @@ interface Union
         union3b,
         union3c,
         some,
-        none
+        none,
+        isNone,
+        isSome
     ]
     imports [
         Decode,
@@ -110,6 +112,10 @@ isNone = \@Option opt ->
     when opt is
         None -> Bool.true
         _ -> Bool.false
+isSome = \@Option opt ->
+    when opt is
+        None -> Bool.false
+        _ -> Bool.true
 
 optionEq = \@Option a, @Option b ->
     when (a, b) is

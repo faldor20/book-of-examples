@@ -1,11 +1,38 @@
+## Implements basic Lsp Types for
+## Init, Hover, DidOpen, DidChange, Completion
 interface LspTypes
     exposes [
         RequestMessage,
-        ResponseMessage,
-        responseMessage,
-        requestMessage,
+        NotificationMessage,
+        LspMessage,
+        # ResponseMessage,
+        notificationMessage,
+        textDocumentSync,
+        DidOpenTextDocumentParams,
+        DidChangeTextDocumentParams,
+        HoverParams, 
+        CompletionParams,
+        InitializeParams,
+        InitializeResponse,
+        CompletionResponse,
+        HoverResponse,
+        Position,
+        Range,
+        MarkupKind,
+        MarkupContent,
+        DocumentUri,
+        TextDocumentIdentifier,
+        VersionedTextDocumentIdentifier,
+        TextDocumentItem,
+        WorkDoneProgressParams,
+        CompletionTriggerKind,
+
+
+
+
     ]
     imports [
+        Wrap.{From,To,from,to},
         Types.Union2.{ Union2 },
         Types.Option.{ Option, none, some },
         Core,
@@ -208,27 +235,17 @@ HoverParams : {
     workDoneToken : Option (Union2 I64 Str),
 }
 
-RequestMessageIntern a : {
+RequestMessage := {
     id : Union2 I64 Str,
     method : Str,
     # TODO: This should techincally be a union of array and object
     # BOOk: notice how we don't make it optional, We do that because we know if it exists when we differentiate types by their method
-    params : a,
+    params : [
+        Init InitializeParams,
+        Hover HoverParams,
+        Completion CompletionParams,
+    ],
 }
-NotificationIntern a : {
-    method : Str,
-    # TODO: This should techincally be a union of array and object
-    # BOOk: notice how we don't make it optional, We do that because we know if it exists when we differentiate types by their method
-    params : a,
-}
-
-RequestMessage := [
-    Init (RequestMessageIntern InitializeParams),
-    Hover (RequestMessageIntern HoverParams),
-    DidOpen (NotificationIntern DidOpenTextDocumentParams),
-    DidChange (NotificationIntern DidChangeTextDocumentParams),
-    Completion (RequestMessageIntern CompletionParams),
-]
     implements [
         Decoding {
             decoder: decodeRequestMessage,
@@ -238,11 +255,16 @@ RequestMessage := [
             toEncoder: requestEncode,
         },
         Eq,
+        From{fromType:fromRequestMessage },
+        To{toType:toRequestMessage}
     ]
+
+
+## This is not optimal, we are allocating everything twice because we first decode to a type with one specific params type and then convert that to the requestMessage type wrapping it in a tag
 decodeRequestMessage = Decode.custom \bytes, fmt ->
     decodeRequest = \requestType ->
         Decode.fromBytesPartial bytes fmt
-        |> Decode.mapResult \res -> @RequestMessage (requestType res)
+        |> Decode.mapResult \res -> @RequestMessage { params: requestType res.params, id: res.id, method: res.method }
 
     Decode.fromBytesPartial bytes fmt
     |> DecodeUtils.tryResult \res, rest ->
@@ -250,16 +272,62 @@ decodeRequestMessage = Decode.custom \bytes, fmt ->
             "textDocument/init" -> decodeRequest Init
             "textDocument/hover" -> decodeRequest Hover
             "textDocument/completion" -> decodeRequest Completion
+            _ -> { result: Err (TooShort), rest }
+
+requestEncode = \@RequestMessage val ->
+    encodeRequest=\ param->
+        Encode.custom \bytes, fmt -> bytes |> Encode.append { params: param, id: val.id, method: val.method } fmt
+    when val.params is
+        Init a -> encodeRequest a
+        Hover a -> encodeRequest a
+        Completion a -> encodeRequest a
+
+fromRequestMessage = \@RequestMessage req -> req
+toRequestMessage = \req -> @RequestMessage req
+
+NotificationMessage := {
+    method : Str,
+    # TODO: This should techincally be a union of array and object
+    # BOOk: notice how we don't make it optional, We do that because we know if it exists when we differentiate types by their method
+    params : [
+        DidOpen DidOpenTextDocumentParams,
+        DidChange DidChangeTextDocumentParams,
+    ],
+}
+    implements [
+        Decoding {
+            decoder: decodeNotificationMessage,
+
+        },
+        Encoding {
+            toEncoder: notificationEncode,
+        },
+        Eq,
+    ]
+
+## This is not optimal, we are allocating everything twice because we first decode to a type with one specific params type and then convert that to the requestMessage type wrapping it in a tag
+decodeNotificationMessage = Decode.custom \bytes, fmt ->
+    decodeRequest = \requestType ->
+        Decode.fromBytesPartial bytes fmt
+        |> Decode.mapResult \res -> @NotificationMessage { params: requestType res.params,  method: res.method }
+
+    Decode.fromBytesPartial bytes fmt
+    |> DecodeUtils.tryResult \res, rest ->
+        when res.method is
             "textDocument/didOpen" -> decodeRequest DidOpen
             "textDocument/didChange" -> decodeRequest DidChange
             _ -> { result: Err (TooShort), rest }
 
-requestEncode = \@RequestMessage val ->
-    when val is
-        Init a -> Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
-        _ -> Encode.u32 1
+notificationEncode= \@NotificationMessage val ->
+    encodeRequest=\ param->
+        Encode.custom \bytes, fmt -> bytes |> Encode.append { params: param,  method: val.method } fmt
+    when val.params is
+        DidOpen a -> encodeRequest a
+        DidChange a -> encodeRequest a
 
-requestMessage = \@RequestMessage req -> req
+notificationMessage = \@NotificationMessage notif -> notif 
+
+LspMessage: Union2 RequestMessage NotificationMessage 
 
 # =====Testing====
 sampleHover =
@@ -273,8 +341,8 @@ expect
     testDecode : Result RequestMessage _
     testDecode = sampleHover |> Decode.fromBytes Core.json
     when testDecode is
-        Ok (@RequestMessage (Hover hover)) ->
-            hover.params.position == (position 5 0)
+        Ok (@RequestMessage { params: Hover hover }) ->
+            hover.position == (position 5 0)
 
         _ -> Bool.false
 
@@ -283,47 +351,51 @@ expect
 # In the decoder we will decide which Request it should decode to
 # It will return a tag union of all the possible types
 
-ResponseMessageIntern a : {
-    id : Option (Union2 I64 Str),
-    result : Option a,
-    # TODO: This should techincally be a union of array and object
-    error : Option ResponseErr,
-}
+# ResponseMessageIntern a : {
+#     id : Option (Union2 I64 Str),
+#     result : Option a,
+#     # TODO: This should techincally be a union of array and object
+#     error : Option ResponseErr,
+# }
 
 ResponseErr : {
     code : I64,
 }
 
-ResponseMessage := [
-    Hover (ResponseMessageIntern HoverResponse),
-    Completion (ResponseMessageIntern CompletionResponse),
-    Init (ResponseMessageIntern InitializeResponse),
+# ResponseMessage := {
 
-]
-    implements [
-        # Decoding {
-        #     decoder: decodeRequestMessage,
-        # },
-        Encoding {
-            toEncoder: responseToEncoder,
-        },
-    ]
-responseToEncoder : ResponseMessage -> _
-responseToEncoder = \@ResponseMessage val ->
-    when val is
-        Hover a ->
-            # Encode.toEncoder
-            Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+#     id : Option (Union2 I64 Str),
+#     result : Option ,
+#     # TODO: This should techincally be a union of array and object
+#     error : Option ResponseErr,
 
-        Completion a ->
-            # Encode.toEncoder
-            Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+# }
+#     implements [
+#         # Decoding {
+#         #     decoder: decodeRequestMessage,
+#         # },
+#         Encoding {
+#             toEncoder: responseToEncoder,
+#         },
+#     ]
 
-        Init a ->
-            Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
-# Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+# responseToEncoder : ResponseMessage -> _
+# responseToEncoder = \@ResponseMessage val ->
+#     when val.result is
+#         Hover a ->
+#             # Encode.toEncoder
+#             Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
 
-responseMessage = \@ResponseMessage req -> req
+#         Completion a ->
+#             # Encode.toEncoder
+#             Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+
+#         Init a ->
+#             Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+# # Encode.custom \bytes, fmt -> bytes |> Encode.append a fmt
+
+# getResponse = \@ResponseMessage response -> response
+# toResponse = \response -> @ResponseMessage response
 
 HoverResponse : {
     ##The hover's content
@@ -365,6 +437,8 @@ encodeTextDocumentSyncKind = \@TextDocumentSyncKind kind ->
             Full -> 1
             Incremental -> 2
     num |> Encode.u8
+textDocumentSync=\sync-> @TextDocumentSyncKind sync
+
 
 CompletionOptions : {
     resolveProvider : Option Bool,
@@ -378,64 +452,40 @@ ServerCapabilities : {
     # Many many other capabilities we won't bother supporting
 }
 
-expect
-    expected =
-        """
-        {"error":null,"id":10,"result":[{"detail":"hello there","documentation":null,"kind":1,"label":"Hi"}]}
-        """
+# expect
+#     expected =
+#         """
+#         {"error":null,"id":10,"result":[{"detail":"hello there","documentation":null,"kind":1,"label":"Hi"}]}
+#         """
 
-    response = @ResponseMessage
-        (
-            Completion {
-                id: some (Types.Union2.u1 10),
-                result: some [
-                    {
-                        label: "Hi",
-                        kind: some (CompletionItemKind.from Text),
-                        detail: some "hello there",
-                        documentation: none {},
-                    },
-                ],
-                error: none {},
-            }
+#     response:ResponseMessage CompletionResponse
+#     response = 
+#         (
+#             {
+#                 id: some (Types.Union2.u1 10),
+#                 result: some [
+#                     {
+#                         label: "Hi",
+#                         kind: some (CompletionItemKind.from Text),
+#                         detail: some "hello there",
+#                         documentation: none {},
+#                     },
+#                 ],
+#                 error: none {},
+#             }
 
-        )
-    actual = Encode.toBytes response Core.json |> Str.fromUtf8
+#         )
+#     actual = Encode.toBytes response Core.json |> Str.fromUtf8
 
-    (Ok expected) == actual
-expect
-    expected =
-        """
-        {"error":null,"id":10,"result":[{"detail":"hello there","documentation":null,"kind":1,"label":"Hi"}]}
-        """
-
-    response = @ResponseMessage
-        (
-            Completion {
-                id: some (Types.Union2.u1 10),
-                result: some [
-                    {
-                        label: "Hi",
-                        kind: some (CompletionItemKind.from Text),
-                        detail: some "hello there",
-                        documentation: none {},
-                    },
-                ],
-                error: none {},
-            }
-
-        )
-    actual = Encode.toBytes response Core.json |> Str.fromUtf8
-
-    (Ok expected) == actual
+#     (Ok expected) == actual
 
 params : InitializeParams
 params = { processId: some (Num.toI64 100) }
 testRequest = @RequestMessage
     (
-        Init {
+        {
             id: Types.Union2.u1 10,
-            params,
+            params: Init params,
             method: "textDocument/init",
         }
     )
