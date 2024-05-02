@@ -119,7 +119,7 @@ FieldNameMapping : [
     Custom (Str -> Str), # provide a custom formatting
 ]
 
-# TODO encode as JSON numbers as base 10 decimal digits
+# TODO encode as JSON kkkkers as base 10 decimal digits
 # e.g. the REPL `Num.toStr 12e42f64` gives
 # "12000000000000000000000000000000000000000000" : Str
 # which should be encoded as "12e42" : Str
