@@ -1,0 +1,7 @@
+
+[[language]]
+name = "markdown"
+language-servers = ["book_ls"]
+
+[language-server.book_ls]
+command = "./main"
